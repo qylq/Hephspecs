@@ -2,8 +2,9 @@ import telebot
 from telebot import types
 from bs4 import BeautifulSoup
 import requests
+from fuzzywuzzy import fuzz, process
 
-bot = telebot.TeleBot('tkn')
+bot = telebot.TeleBot('token')
 allowed = [ids]
 
 @bot.message_handler(commands=['start'])
@@ -20,7 +21,7 @@ def restrict_access(message):
 
 @bot.message_handler(func=lambda message: True)
 def hephspecs(message):
-    print(f"{message.chat.username} ({message.from_user.id}): {message.text}")
+    print(f"{message.chat.username} ({message.from_user.id}), запрос: {message.text}")
     # afr
     headphones = message.text
     url = f"https://crinacle.com/?s={headphones.replace(' ', '+')}"
@@ -28,6 +29,7 @@ def hephspecs(message):
     soup = BeautifulSoup(page.text, "html.parser")
 
     graphic = []
+    matches = []
 
     all_cards = soup.find_all("div", class_="elementor-widget-container")
     for card in all_cards:
@@ -36,11 +38,11 @@ def hephspecs(message):
         for url, text in zip(card_urls, card_texts):
             card_url = url.get("href")
             card_text = text.text.strip()
-            if card_url.startswith("https://crinacle.com/graphs/") and headphones.lower().replace(" ", "") == card_text.lower().replace(" ", ""):
-                graphic.append(card_url)
-                break
-            else:
-                pass
+            matches.append(card_text)
+            if card_url.startswith("https://crinacle.com/graphs/"):
+                best_match = process.extractOne(headphones.lower(), matches, scorer=fuzz.partial_ratio)
+                if headphones.lower().replace(" ", "") in best_match[0].lower().replace(" ", ""):
+                    graphic.append(card_url)
 
     if graphic:
         page = requests.get(graphic[0])
@@ -48,8 +50,8 @@ def hephspecs(message):
         graph_pic = soup.find_all('img', class_=["attachment-large", "size-large"]) 
         for graph_png in graph_pic:
             graphic[0] = graph_png.get("src")
-    else:
-        pass
+        print(f"{message.chat.username} ({message.from_user.id}), ссылка на Crinacle: {graphic[0]}")
+    else: pass
 
     # best for
     url = f"https://www.rtings.com/api/v1/pages?query={headphones}&admin=false&highlights=false&partial=true&count=5&silo=null"
@@ -68,6 +70,9 @@ def hephspecs(message):
         for bestfor in scorecard_rows:
             name = bestfor.find('div', class_="scorecard-row-name").text.strip()
             bf.append(name)
+        if url.startswith("https://www.rtings.com/headphones/reviews/"):
+            print(f"{message.chat.username} ({message.from_user.id}), ссылка на Rtings: {url}")
+        else: pass
     except: pass
     
     bf_translation = {"Neutral Sound": "Нейтральный звук",
@@ -192,6 +197,11 @@ def hephspecs(message):
     except: pass
 
     mf = False
+    pressed_users = set()
+
+    wrong = telebot.types.InlineKeyboardButton(text="❌ Не то", callback_data="wrong")
+    correct = telebot.types.InlineKeyboardButton(text="✅ Всё то", callback_data="correct")
+    keyboard = telebot.types.InlineKeyboardMarkup().add(wrong, correct)
 
     if graphic:
         bot.send_photo(message.chat.id, graphic[0])
@@ -199,11 +209,33 @@ def hephspecs(message):
         bot.send_message(message.chat.id, f"☹️ Я не нашел <code>{headphones}</code> на Crinacle", parse_mode="html")
     
     if url.startswith("https://www.rtings.com/headphones/reviews/"):
-        if any(headphones.replace(" ", "") in headphones_opt.replace(" ", "") for headphones_opt in [headphones_name[0].lower(), headphones_name[0].upper(), headphones_name[0].title(), headphones_name[0].capitalize()]):
+        if headphones.lower().replace(" ", "") in headphones_name[0].lower().replace(" ", ""):
             mf = True
     if mf == True:
         bot.send_photo(message.chat.id, headphones_png[0])
-        bot.send_message(message.chat.id, msg_txt, parse_mode="html", disable_web_page_preview=True)
+        bot.send_message(message.chat.id, msg_txt, reply_markup=keyboard, parse_mode="html", disable_web_page_preview=True)
+        @bot.callback_query_handler(func=lambda call: True)
+        def callback(call):
+            if call.data == "wrong":
+                if call.from_user.id in pressed_users:
+                    bot.answer_callback_query(callback_query_id=call.id, text="👌 Уже знаем о вашей проблеме")
+                else:
+                    pressed_users.add(call.from_user.id)
+                    with open("wrong_results.txt", "w") as f:
+                        f.write(f"{message.chat.username} ({message.from_user.id}): error in result \"{headphones}\"\n{graphic[0]}\n{url}")
+                    bot.answer_callback_query(call.id, text="👌 Спасибо, что сообщили! Мы постараемся улучшить точность результатов")
+                    print(f"{message.chat.username} ({message.from_user.id}): ошибка в результате, просмотрите файл")
+            if call.data == "correct":
+                if call.from_user.id in pressed_users:
+                    bot.answer_callback_query(callback_query_id=call.id, text="😃 Спасибо!")
+                else:
+                    cnt = open("correct_results.txt", "r", encoding="utf-8")
+                    with cnt as f:
+                        cnt = int(f.read())
+                    cnt += 1
+                    with open("correct_results.txt", "w") as f:
+                        f.write(str(cnt))
+                    bot.answer_callback_query(callback_query_id=call.id, text="😃 Спасибо!")
     else:
         bot.send_message(message.chat.id, f"☹️ Я не нашел <code>{headphones}</code> на Rtings", parse_mode="html")
 
